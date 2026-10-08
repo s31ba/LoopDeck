@@ -1,0 +1,6 @@
+{
+  "name": "Video Scene Hotkey Player",
+  "description": "Desktop-style video player with custom hotkey-triggered scene looping, timeline visualizer, and project export/import.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
