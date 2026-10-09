@@ -1085,6 +1085,8 @@ export default function App() {
                 volume={volume}
                 isMuted={isMuted}
                 currentTime={currentTime}
+                duration={duration}
+                onSeek={handleSeek}
                 isRecording={isRecording}
                 recordingStartTime={recordingStartTime}
                 vrSettings={activeVideo?.vrSettings}

@@ -22,6 +22,8 @@ interface MultiBoxVideoSlotProps {
   onRemove: (slotIndex: number) => void;
   initialVolume?: number;
   className?: string;
+  forceHideControls?: boolean;
+  isFullscreen?: boolean;
 }
 
 export const MultiBoxVideoSlot: React.FC<MultiBoxVideoSlotProps> = ({
@@ -31,6 +33,8 @@ export const MultiBoxVideoSlot: React.FC<MultiBoxVideoSlotProps> = ({
   onRemove,
   initialVolume = 1,
   className = '',
+  forceHideControls = false,
+  isFullscreen = false,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(true);
@@ -242,8 +246,10 @@ export const MultiBoxVideoSlot: React.FC<MultiBoxVideoSlotProps> = ({
 
           {/* Top Bar (Overlay) */}
           <div
-            className={`absolute top-0 inset-x-0 p-3 bg-gradient-to-b from-black/85 via-black/40 to-transparent flex items-center justify-between transition-opacity duration-200 z-20 ${
-              showControls || !isPlaying ? 'opacity-100' : 'opacity-0'
+            className={`absolute top-0 inset-x-0 p-3 bg-gradient-to-b from-black/85 via-black/40 to-transparent flex items-center justify-between transition-opacity duration-300 z-20 ${
+              !forceHideControls && (showControls || !isPlaying)
+                ? 'opacity-100 pointer-events-auto'
+                : 'opacity-0 pointer-events-none'
             }`}
           >
             {/* Source & Scene Tag */}
@@ -294,7 +300,7 @@ export const MultiBoxVideoSlot: React.FC<MultiBoxVideoSlotProps> = ({
           </div>
 
           {/* Large Center Play/Pause Indicator (when paused) */}
-          {!isPlaying && (
+          {!isPlaying && !forceHideControls && (
             <button
               onClick={togglePlay}
               className="absolute inset-0 m-auto w-14 h-14 rounded-full bg-cyan-500/90 text-slate-950 flex items-center justify-center shadow-2xl shadow-cyan-500/50 hover:scale-110 active:scale-95 transition-all z-20"
@@ -306,12 +312,22 @@ export const MultiBoxVideoSlot: React.FC<MultiBoxVideoSlotProps> = ({
 
           {/* Bottom Controls Bar (Overlay) */}
           <div
-            className={`absolute bottom-0 inset-x-0 p-3 bg-gradient-to-t from-black/90 via-black/50 to-transparent flex flex-col gap-1.5 transition-opacity duration-200 z-20 ${
-              showControls || !isPlaying ? 'opacity-100' : 'opacity-0'
+            className={`absolute bottom-0 inset-x-0 p-3 bg-gradient-to-t from-black/90 via-black/50 to-transparent flex flex-col gap-1.5 transition-opacity duration-300 z-20 ${
+              !forceHideControls && (showControls || !isPlaying || isFullscreen)
+                ? 'opacity-100 pointer-events-auto'
+                : 'opacity-0 pointer-events-none'
             }`}
           >
-            {/* Scrubber Track */}
-            <div className="relative w-full flex items-center group/track">
+            {/* Scrubber Track with Visual Progress Fill */}
+            <div className="relative w-full flex items-center group/track h-4 cursor-pointer">
+              <div className="absolute inset-x-0 h-1.5 group-hover/track:h-2 rounded-full bg-slate-700/80 transition-all overflow-hidden">
+                <div
+                  className="absolute left-0 top-0 bottom-0 bg-gradient-to-r from-cyan-500 to-indigo-500 rounded-full"
+                  style={{
+                    width: `${Math.max(0, Math.min(100, (isNaN(progressFraction) ? 0 : progressFraction) * 100))}%`,
+                  }}
+                />
+              </div>
               <input
                 type="range"
                 min={0}
@@ -319,7 +335,14 @@ export const MultiBoxVideoSlot: React.FC<MultiBoxVideoSlotProps> = ({
                 step={0.001}
                 value={isNaN(progressFraction) ? 0 : progressFraction}
                 onChange={handleScrub}
-                className="w-full h-1.5 rounded-lg bg-slate-700/80 accent-cyan-400 cursor-pointer appearance-none outline-none"
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                title={`Progress: ${formatTimestamp(Math.max(0, currentTime - startTime), false)} / ${formatTimestamp(slotEffectiveDuration, false)}`}
+              />
+              <div
+                className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-white border border-cyan-400 shadow-sm pointer-events-none scale-0 group-hover/track:scale-100 transition-transform z-10"
+                style={{
+                  left: `${Math.max(0, Math.min(100, (isNaN(progressFraction) ? 0 : progressFraction) * 100))}%`,
+                }}
               />
             </div>
 

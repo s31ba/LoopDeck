@@ -38,6 +38,26 @@ export const MultiBoxModal: React.FC<MultiBoxModalProps> = ({
 
   // Fullscreen state (Requirement 1 & 3)
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [areControlsVisible, setAreControlsVisible] = useState<boolean>(true);
+  const inactivityTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const isInteractingWithControlsRef = useRef<boolean>(false);
+
+  const resetInactivityTimer = useCallback(() => {
+    setAreControlsVisible(true);
+
+    if (inactivityTimeoutRef.current) {
+      clearTimeout(inactivityTimeoutRef.current);
+      inactivityTimeoutRef.current = null;
+    }
+
+    if (isFullscreen) {
+      inactivityTimeoutRef.current = setTimeout(() => {
+        if (!isInteractingWithControlsRef.current) {
+          setAreControlsVisible(false);
+        }
+      }, 3000);
+    }
+  }, [isFullscreen]);
 
   // Scene Bank sidebar visibility (in fullscreen, defaults to false so the entire video layout fills the screen; toggleable via header button)
   const [showSceneBank, setShowSceneBank] = useState<boolean>(true);
@@ -115,6 +135,23 @@ export const MultiBoxModal: React.FC<MultiBoxModalProps> = ({
       setIsFullscreen(isCurrentlyFullscreen);
       if (!isCurrentlyFullscreen) {
         setShowSceneBank(true);
+        setAreControlsVisible(true);
+        isInteractingWithControlsRef.current = false;
+        if (inactivityTimeoutRef.current) {
+          clearTimeout(inactivityTimeoutRef.current);
+          inactivityTimeoutRef.current = null;
+        }
+      } else {
+        setAreControlsVisible(true);
+        isInteractingWithControlsRef.current = false;
+        if (inactivityTimeoutRef.current) {
+          clearTimeout(inactivityTimeoutRef.current);
+        }
+        inactivityTimeoutRef.current = setTimeout(() => {
+          if (!isInteractingWithControlsRef.current) {
+            setAreControlsVisible(false);
+          }
+        }, 3000);
       }
     };
 
@@ -125,6 +162,52 @@ export const MultiBoxModal: React.FC<MultiBoxModalProps> = ({
       document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
     };
   }, []);
+
+  // MultiBox fullscreen user activity & inactivity listener
+  useEffect(() => {
+    if (!isFullscreen || !isOpen) return;
+
+    const handleUserActivity = () => {
+      resetInactivityTimer();
+    };
+
+    const handlePointerUp = () => {
+      if (isInteractingWithControlsRef.current) {
+        isInteractingWithControlsRef.current = false;
+        resetInactivityTimer();
+      }
+    };
+
+    const container = containerRef.current;
+    if (container) {
+      container.addEventListener('mousemove', handleUserActivity);
+      container.addEventListener('pointermove', handleUserActivity);
+      container.addEventListener('mousedown', handleUserActivity);
+      container.addEventListener('pointerdown', handleUserActivity);
+      container.addEventListener('touchstart', handleUserActivity, { passive: true });
+    }
+
+    window.addEventListener('mousemove', handleUserActivity);
+    window.addEventListener('keydown', handleUserActivity);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('mouseup', handlePointerUp);
+    window.addEventListener('touchend', handlePointerUp);
+
+    return () => {
+      if (container) {
+        container.removeEventListener('mousemove', handleUserActivity);
+        container.removeEventListener('pointermove', handleUserActivity);
+        container.removeEventListener('mousedown', handleUserActivity);
+        container.removeEventListener('pointerdown', handleUserActivity);
+        container.removeEventListener('touchstart', handleUserActivity);
+      }
+      window.removeEventListener('mousemove', handleUserActivity);
+      window.removeEventListener('keydown', handleUserActivity);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('mouseup', handlePointerUp);
+      window.removeEventListener('touchend', handlePointerUp);
+    };
+  }, [isFullscreen, isOpen, resetInactivityTimer]);
 
   // Clean close handler that completely resets all box assignments and playback state
   const handleClose = useCallback(() => {
@@ -230,15 +313,29 @@ export const MultiBoxModal: React.FC<MultiBoxModalProps> = ({
     setAssignments([null, null, null, null]);
   };
 
+  // Helper to render a video slot with auto-hide synchronized
+  const renderSlot = (slotIndex: number) => (
+    <MultiBoxVideoSlot
+      key={`slot-${slotIndex}`}
+      slotIndex={slotIndex}
+      assignment={assignments[slotIndex]}
+      onAssign={handleAssignSlot}
+      onRemove={handleRemoveSlot}
+      initialVolume={initialVolume}
+      forceHideControls={isFullscreen && !areControlsVisible}
+      isFullscreen={isFullscreen}
+    />
+  );
+
   return (
     <div
       ref={containerRef}
       data-multibox-modal="true"
-      className={
+      className={`${
         isFullscreen
           ? 'fixed inset-0 z-50 w-screen h-screen m-0 p-0 overflow-hidden bg-slate-950 flex flex-col select-none'
           : 'fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 select-none animate-in fade-in duration-200'
-      }
+      } ${isFullscreen && !areControlsVisible ? 'cursor-none [&_*]:cursor-none' : ''}`}
     >
       {/* Blurred Backdrop (hidden during fullscreen) */}
       {!isFullscreen && (
@@ -258,9 +355,47 @@ export const MultiBoxModal: React.FC<MultiBoxModalProps> = ({
       >
         {/* Top Header Bar */}
         <div
+          onMouseEnter={() => {
+            if (isFullscreen) {
+              isInteractingWithControlsRef.current = true;
+              if (inactivityTimeoutRef.current) {
+                clearTimeout(inactivityTimeoutRef.current);
+                inactivityTimeoutRef.current = null;
+              }
+              setAreControlsVisible(true);
+            }
+          }}
+          onMouseLeave={() => {
+            if (isFullscreen) {
+              isInteractingWithControlsRef.current = false;
+              resetInactivityTimer();
+            }
+          }}
+          onPointerDown={() => {
+            if (isFullscreen) {
+              isInteractingWithControlsRef.current = true;
+              if (inactivityTimeoutRef.current) {
+                clearTimeout(inactivityTimeoutRef.current);
+                inactivityTimeoutRef.current = null;
+              }
+              setAreControlsVisible(true);
+            }
+          }}
+          onPointerUp={() => {
+            if (isFullscreen) {
+              isInteractingWithControlsRef.current = false;
+              resetInactivityTimer();
+            }
+          }}
           className={`${
             isFullscreen ? 'px-4 py-2 bg-slate-900/95' : 'px-5 py-3.5 bg-slate-900/90'
-          } border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-3 shrink-0`}
+          } border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-3 shrink-0 transition-opacity duration-300 ${
+            isFullscreen
+              ? areControlsVisible
+                ? 'opacity-100 pointer-events-auto'
+                : 'opacity-0 pointer-events-none'
+              : 'opacity-100 pointer-events-auto'
+          }`}
         >
           {/* Logo & Title */}
           <div className="flex items-center gap-3">
@@ -456,14 +591,7 @@ export const MultiBoxModal: React.FC<MultiBoxModalProps> = ({
           >
             {layout === '1-box' && (
               <div className="w-full h-full">
-                <MultiBoxVideoSlot
-                  key="slot-0"
-                  slotIndex={0}
-                  assignment={assignments[0]}
-                  onAssign={handleAssignSlot}
-                  onRemove={handleRemoveSlot}
-                  initialVolume={initialVolume}
-                />
+                {renderSlot(0)}
               </div>
             )}
 
@@ -473,22 +601,8 @@ export const MultiBoxModal: React.FC<MultiBoxModalProps> = ({
                   isFullscreen ? 'gap-2 sm:gap-2.5' : 'gap-3.5'
                 }`}
               >
-                <MultiBoxVideoSlot
-                  key="slot-0"
-                  slotIndex={0}
-                  assignment={assignments[0]}
-                  onAssign={handleAssignSlot}
-                  onRemove={handleRemoveSlot}
-                  initialVolume={initialVolume}
-                />
-                <MultiBoxVideoSlot
-                  key="slot-1"
-                  slotIndex={1}
-                  assignment={assignments[1]}
-                  onAssign={handleAssignSlot}
-                  onRemove={handleRemoveSlot}
-                  initialVolume={initialVolume}
-                />
+                {renderSlot(0)}
+                {renderSlot(1)}
               </div>
             )}
 
@@ -501,36 +615,15 @@ export const MultiBoxModal: React.FC<MultiBoxModalProps> = ({
               >
                 {/* Large Box Left (spans 2 rows) */}
                 <div className="row-span-2 col-span-1 h-full min-h-0">
-                  <MultiBoxVideoSlot
-                    key="slot-0"
-                    slotIndex={0}
-                    assignment={assignments[0]}
-                    onAssign={handleAssignSlot}
-                    onRemove={handleRemoveSlot}
-                    initialVolume={initialVolume}
-                  />
+                  {renderSlot(0)}
                 </div>
                 {/* Top Right Box */}
                 <div className="col-span-1 row-span-1 h-full min-h-0">
-                  <MultiBoxVideoSlot
-                    key="slot-1"
-                    slotIndex={1}
-                    assignment={assignments[1]}
-                    onAssign={handleAssignSlot}
-                    onRemove={handleRemoveSlot}
-                    initialVolume={initialVolume}
-                  />
+                  {renderSlot(1)}
                 </div>
                 {/* Bottom Right Box */}
                 <div className="col-span-1 row-span-1 h-full min-h-0">
-                  <MultiBoxVideoSlot
-                    key="slot-2"
-                    slotIndex={2}
-                    assignment={assignments[2]}
-                    onAssign={handleAssignSlot}
-                    onRemove={handleRemoveSlot}
-                    initialVolume={initialVolume}
-                  />
+                  {renderSlot(2)}
                 </div>
               </div>
             )}
@@ -544,36 +637,15 @@ export const MultiBoxModal: React.FC<MultiBoxModalProps> = ({
               >
                 {/* 1 Large Box across top half (spans 2 columns, 1 row) */}
                 <div className="col-span-2 row-span-1 h-full min-h-0">
-                  <MultiBoxVideoSlot
-                    key="slot-0"
-                    slotIndex={0}
-                    assignment={assignments[0]}
-                    onAssign={handleAssignSlot}
-                    onRemove={handleRemoveSlot}
-                    initialVolume={initialVolume}
-                  />
+                  {renderSlot(0)}
                 </div>
                 {/* Bottom Left Box */}
                 <div className="col-span-1 row-span-1 h-full min-h-0">
-                  <MultiBoxVideoSlot
-                    key="slot-1"
-                    slotIndex={1}
-                    assignment={assignments[1]}
-                    onAssign={handleAssignSlot}
-                    onRemove={handleRemoveSlot}
-                    initialVolume={initialVolume}
-                  />
+                  {renderSlot(1)}
                 </div>
                 {/* Bottom Right Box */}
                 <div className="col-span-1 row-span-1 h-full min-h-0">
-                  <MultiBoxVideoSlot
-                    key="slot-2"
-                    slotIndex={2}
-                    assignment={assignments[2]}
-                    onAssign={handleAssignSlot}
-                    onRemove={handleRemoveSlot}
-                    initialVolume={initialVolume}
-                  />
+                  {renderSlot(2)}
                 </div>
               </div>
             )}
@@ -584,38 +656,10 @@ export const MultiBoxModal: React.FC<MultiBoxModalProps> = ({
                   isFullscreen ? 'gap-2 sm:gap-2.5' : 'gap-3.5'
                 }`}
               >
-                <MultiBoxVideoSlot
-                  key="slot-0"
-                  slotIndex={0}
-                  assignment={assignments[0]}
-                  onAssign={handleAssignSlot}
-                  onRemove={handleRemoveSlot}
-                  initialVolume={initialVolume}
-                />
-                <MultiBoxVideoSlot
-                  key="slot-1"
-                  slotIndex={1}
-                  assignment={assignments[1]}
-                  onAssign={handleAssignSlot}
-                  onRemove={handleRemoveSlot}
-                  initialVolume={initialVolume}
-                />
-                <MultiBoxVideoSlot
-                  key="slot-2"
-                  slotIndex={2}
-                  assignment={assignments[2]}
-                  onAssign={handleAssignSlot}
-                  onRemove={handleRemoveSlot}
-                  initialVolume={initialVolume}
-                />
-                <MultiBoxVideoSlot
-                  key="slot-3"
-                  slotIndex={3}
-                  assignment={assignments[3]}
-                  onAssign={handleAssignSlot}
-                  onRemove={handleRemoveSlot}
-                  initialVolume={initialVolume}
-                />
+                {renderSlot(0)}
+                {renderSlot(1)}
+                {renderSlot(2)}
+                {renderSlot(3)}
               </div>
             )}
           </div>

@@ -28,6 +28,8 @@ interface VideoPlayerProps {
   volume: number;
   isMuted: boolean;
   currentTime?: number;
+  duration?: number;
+  onSeek?: (time: number) => void;
   isRecording?: boolean;
   recordingStartTime?: number | null;
   vrSettings?: VideoVRSettings;
@@ -58,6 +60,8 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(
       volume,
       isMuted,
       currentTime = 0,
+      duration = 0,
+      onSeek,
       isRecording = false,
       recordingStartTime = null,
       vrSettings,
@@ -496,11 +500,102 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(
     }, [activeScene?.id, isVREnabled]);
 
     const [isFullscreen, setIsFullscreen] = useState(false);
+    const [areControlsVisible, setAreControlsVisible] = useState(true);
+    const inactivityTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+    const isInteractingWithControlsRef = useRef(false);
+
+    // Fullscreen interactive seekbar dragging state
+    const [isDraggingSeek, setIsDraggingSeek] = useState(false);
+    const [dragSeekTime, setDragSeekTime] = useState<number | null>(null);
+
+    const activeSlotVideo = activeSlot === 'A' ? videoRefA.current : videoRefB.current;
+    const effectiveDuration = duration || activeSlotVideo?.duration || 0;
+    const effectiveTime =
+      isDraggingSeek && dragSeekTime !== null
+        ? dragSeekTime
+        : (currentTime || activeSlotVideo?.currentTime || 0);
+
+    const resetInactivityTimer = useCallback(() => {
+      setAreControlsVisible(true);
+
+      if (inactivityTimeoutRef.current) {
+        clearTimeout(inactivityTimeoutRef.current);
+        inactivityTimeoutRef.current = null;
+      }
+
+      if (isFullscreen) {
+        inactivityTimeoutRef.current = setTimeout(() => {
+          if (!isInteractingWithControlsRef.current && !isDraggingSeek) {
+            setAreControlsVisible(false);
+          }
+        }, 3000);
+      }
+    }, [isFullscreen, isDraggingSeek]);
+
+    const handleSeekProgress = useCallback(
+      (newTime: number) => {
+        const dur = effectiveDuration || 0;
+        const target = Math.max(0, Math.min(dur, newTime));
+        setDragSeekTime(target);
+
+        const activeVideo = activeSlotRef.current === 'A' ? videoRefA.current : videoRefB.current;
+        const standbyVideo = activeSlotRef.current === 'A' ? videoRefB.current : videoRefA.current;
+
+        if (activeVideo) {
+          activeVideo.currentTime = target;
+        }
+        if (standbyVideo && activeSceneRef.current) {
+          standbyVideo.currentTime = activeSceneRef.current.startTime;
+        }
+
+        onTimeUpdate(target, dur);
+        if (onSeek) {
+          onSeek(target);
+        }
+      },
+      [effectiveDuration, onTimeUpdate, onSeek]
+    );
+
+    const handleSeekCommit = useCallback(
+      (newTime: number) => {
+        handleSeekProgress(newTime);
+        setIsDraggingSeek(false);
+        setDragSeekTime(null);
+        isInteractingWithControlsRef.current = false;
+        resetInactivityTimer();
+      },
+      [handleSeekProgress, resetInactivityTimer]
+    );
 
     useEffect(() => {
       const handleFullscreenChange = () => {
-        setIsFullscreen(!!document.fullscreenElement);
+        const isFS = !!document.fullscreenElement;
+        setIsFullscreen(isFS);
+        if (!isFS) {
+          // When exiting fullscreen, restore normal UI visibility and behavior
+          setAreControlsVisible(true);
+          isInteractingWithControlsRef.current = false;
+          setIsDraggingSeek(false);
+          setDragSeekTime(null);
+          if (inactivityTimeoutRef.current) {
+            clearTimeout(inactivityTimeoutRef.current);
+            inactivityTimeoutRef.current = null;
+          }
+        } else {
+          // When entering fullscreen, start with controls visible and begin 3s inactivity countdown
+          setAreControlsVisible(true);
+          isInteractingWithControlsRef.current = false;
+          if (inactivityTimeoutRef.current) {
+            clearTimeout(inactivityTimeoutRef.current);
+          }
+          inactivityTimeoutRef.current = setTimeout(() => {
+            if (!isInteractingWithControlsRef.current) {
+              setAreControlsVisible(false);
+            }
+          }, 3000);
+        }
       };
+
       document.addEventListener('fullscreenchange', handleFullscreenChange);
       document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
       return () => {
@@ -508,6 +603,54 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(
         document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
       };
     }, []);
+
+    // Fullscreen mouse activity & inactivity listener
+    useEffect(() => {
+      if (!isFullscreen) return;
+
+      const handleUserActivity = () => {
+        resetInactivityTimer();
+      };
+
+      const handlePointerUp = () => {
+        setIsDraggingSeek(false);
+        setDragSeekTime(null);
+        if (isInteractingWithControlsRef.current) {
+          isInteractingWithControlsRef.current = false;
+          resetInactivityTimer();
+        }
+      };
+
+      const container = containerRef.current;
+      if (container) {
+        container.addEventListener('mousemove', handleUserActivity);
+        container.addEventListener('pointermove', handleUserActivity);
+        container.addEventListener('mousedown', handleUserActivity);
+        container.addEventListener('pointerdown', handleUserActivity);
+        container.addEventListener('touchstart', handleUserActivity, { passive: true });
+      }
+
+      window.addEventListener('mousemove', handleUserActivity);
+      window.addEventListener('keydown', handleUserActivity);
+      window.addEventListener('pointerup', handlePointerUp);
+      window.addEventListener('mouseup', handlePointerUp);
+      window.addEventListener('touchend', handlePointerUp);
+
+      return () => {
+        if (container) {
+          container.removeEventListener('mousemove', handleUserActivity);
+          container.removeEventListener('pointermove', handleUserActivity);
+          container.removeEventListener('mousedown', handleUserActivity);
+          container.removeEventListener('pointerdown', handleUserActivity);
+          container.removeEventListener('touchstart', handleUserActivity);
+        }
+        window.removeEventListener('mousemove', handleUserActivity);
+        window.removeEventListener('keydown', handleUserActivity);
+        window.removeEventListener('pointerup', handlePointerUp);
+        window.removeEventListener('mouseup', handlePointerUp);
+        window.removeEventListener('touchend', handlePointerUp);
+      };
+    }, [isFullscreen, resetInactivityTimer]);
 
     const toggleFullscreen = useCallback(() => {
       const container = containerRef.current;
@@ -581,7 +724,7 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(
           activeScene
             ? 'border-cyan-500/50 shadow-cyan-500/10 ring-1 ring-cyan-500/30'
             : 'border-slate-800 hover:border-slate-700'
-        }`}
+        } ${isFullscreen && !areControlsVisible ? 'cursor-none [&_*]:cursor-none' : ''}`}
       >
         {videoSrc ? (
           <>
@@ -743,8 +886,32 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(
             )}
 
             {/* Top-Left Hover-Only Video Name & VR Button & VR Controls (Requirement 1, 2, 17) */}
-            <div className="absolute top-3.5 left-3.5 z-40 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col gap-2 max-w-[95%] pointer-events-none">
-              <div className="flex flex-wrap items-center gap-2 pointer-events-auto">
+            <div
+              onMouseEnter={() => {
+                if (isFullscreen) {
+                  isInteractingWithControlsRef.current = true;
+                  if (inactivityTimeoutRef.current) {
+                    clearTimeout(inactivityTimeoutRef.current);
+                    inactivityTimeoutRef.current = null;
+                  }
+                  setAreControlsVisible(true);
+                }
+              }}
+              onMouseLeave={() => {
+                if (isFullscreen) {
+                  isInteractingWithControlsRef.current = false;
+                  resetInactivityTimer();
+                }
+              }}
+              className={`absolute top-3.5 left-3.5 z-40 transition-opacity duration-300 flex flex-col gap-2 max-w-[95%] select-none ${
+                isFullscreen
+                  ? areControlsVisible
+                    ? 'opacity-100 pointer-events-auto'
+                    : 'opacity-0 pointer-events-none'
+                  : 'opacity-0 group-hover:opacity-100 pointer-events-none'
+              }`}
+            >
+              <div className={`flex flex-wrap items-center gap-2 ${isFullscreen ? '' : 'pointer-events-auto'}`}>
                 {videoFileName && (
                   <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-950/85 backdrop-blur-md border border-slate-800 text-xs text-slate-200 shadow-xl font-bold tracking-wide">
                     <Film className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
@@ -769,7 +936,7 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(
 
               {/* Additional VR Controls Overlay Ribbon */}
               {isVREnabled && (
-                <div className="pointer-events-auto">
+                <div className={isFullscreen ? '' : 'pointer-events-auto'}>
                   <VRControlsOverlay
                     vrSettings={
                       vrSettings || {
@@ -793,7 +960,13 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(
             {!isPlaying && (
               <div
                 onClick={togglePlayPause}
-                className="absolute inset-0 flex items-center justify-center bg-black/30 cursor-pointer pointer-events-auto opacity-0 group-hover:opacity-100 transition-opacity z-30"
+                className={`absolute inset-0 flex items-center justify-center bg-black/30 cursor-pointer z-30 transition-opacity duration-300 ${
+                  isFullscreen
+                    ? areControlsVisible
+                      ? 'opacity-100 pointer-events-auto'
+                      : 'opacity-0 pointer-events-none'
+                    : 'opacity-0 group-hover:opacity-100 pointer-events-auto'
+                }`}
               >
                 <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-cyan-600/90 to-indigo-600/90 border border-white/30 text-white flex items-center justify-center backdrop-blur-md shadow-2xl hover:scale-110 transition-transform">
                   <Play className="w-7 h-7 ml-0.5 text-white fill-white" />
@@ -801,80 +974,222 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(
               </div>
             )}
 
-            {/* Fullscreen Overlay Controls (Bottom-Right: Volume Slider + Exit Fullscreen) */}
+            {/* Fullscreen Overlay Controls (Bottom: Progress Bar + Volume/Exit Pill) */}
             {isFullscreen && (
               <div
                 onClick={(e) => e.stopPropagation()}
-                className="absolute bottom-6 right-6 z-40 flex items-center gap-3 px-4 py-2 rounded-2xl bg-slate-950/90 backdrop-blur-xl border border-slate-700/80 shadow-2xl opacity-0 group-hover:opacity-100 hover:opacity-100 transition-opacity duration-300 pointer-events-auto select-none"
+                onMouseEnter={() => {
+                  isInteractingWithControlsRef.current = true;
+                  if (inactivityTimeoutRef.current) {
+                    clearTimeout(inactivityTimeoutRef.current);
+                    inactivityTimeoutRef.current = null;
+                  }
+                  setAreControlsVisible(true);
+                }}
+                onMouseLeave={() => {
+                  if (!isDraggingSeek) {
+                    isInteractingWithControlsRef.current = false;
+                    resetInactivityTimer();
+                  }
+                }}
+                className={`absolute bottom-6 left-6 right-6 z-40 flex items-center gap-3 transition-opacity duration-300 pointer-events-none select-none ${
+                  areControlsVisible
+                    ? 'opacity-100'
+                    : 'opacity-0'
+                }`}
               >
-                {/* Mute/Unmute Button */}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (onToggleMute) {
-                      onToggleMute();
+                {/* Subtle Minimal Video Progress Bar Capsule */}
+                <div
+                  onPointerDown={() => {
+                    isInteractingWithControlsRef.current = true;
+                    if (inactivityTimeoutRef.current) {
+                      clearTimeout(inactivityTimeoutRef.current);
+                      inactivityTimeoutRef.current = null;
+                    }
+                    setAreControlsVisible(true);
+                  }}
+                  onPointerUp={() => {
+                    if (!isDraggingSeek) {
+                      isInteractingWithControlsRef.current = false;
+                      resetInactivityTimer();
                     }
                   }}
-                  className="p-1.5 rounded-xl hover:bg-slate-800 text-slate-300 hover:text-white transition-colors"
-                  title={isMuted ? 'Unmute (M)' : 'Mute (M)'}
+                  className="flex-1 min-w-0 flex items-center gap-3 px-4 py-2.5 rounded-2xl bg-slate-950/90 backdrop-blur-xl border border-slate-700/80 shadow-2xl pointer-events-auto"
                 >
-                  {isMuted || volume === 0 ? (
-                    <VolumeX className="w-4 h-4 text-rose-400" />
-                  ) : (
-                    <Volume2
-                      className="w-4 h-4 transition-colors"
-                      style={{ color: getVolumeColor(volume) }}
-                    />
-                  )}
-                </button>
+                  {/* Current Playback Timestamp */}
+                  <span className="font-mono text-xs font-bold text-cyan-400 shrink-0 select-none">
+                    {formatTimestamp(effectiveTime, false)}
+                  </span>
 
-                {/* Volume Slider (0% to 200%) */}
-                <div className="flex items-center gap-2">
-                  <div className="relative flex items-center">
+                  {/* Interactive Progress Bar Track */}
+                  <div className="relative flex-1 flex items-center h-5 group/seek cursor-pointer">
+                    {/* Background Track with Played Gradient */}
+                    <div className="absolute inset-x-0 h-1.5 group-hover/seek:h-2 rounded-full bg-slate-800/90 transition-all overflow-hidden">
+                      {/* Active Scene Highlight (if scene is looping) */}
+                      {activeScene && effectiveDuration > 0 && (
+                        <div
+                          className="absolute top-0 bottom-0 opacity-40 transition-all"
+                          style={{
+                            left: `${Math.max(0, Math.min(100, (activeScene.startTime / effectiveDuration) * 100))}%`,
+                            width: `${Math.max(0, Math.min(100, ((activeScene.endTime - activeScene.startTime) / effectiveDuration) * 100))}%`,
+                            backgroundColor: activeScene.color || '#06b6d4',
+                          }}
+                        />
+                      )}
+
+                      {/* Played Progress Fill */}
+                      <div
+                        className="absolute left-0 top-0 bottom-0 bg-gradient-to-r from-cyan-500 via-sky-400 to-indigo-500 rounded-full"
+                        style={{
+                          width: `${effectiveDuration > 0 ? Math.max(0, Math.min(100, (effectiveTime / effectiveDuration) * 100)) : 0}%`,
+                        }}
+                      />
+                    </div>
+
+                    {/* Range input for smooth click & drag seeking */}
                     <input
                       type="range"
                       min={0}
-                      max={2}
+                      max={effectiveDuration || 100}
                       step={0.05}
-                      value={volume}
+                      value={effectiveTime}
                       onClick={(e) => e.stopPropagation()}
+                      onPointerDown={() => {
+                        isInteractingWithControlsRef.current = true;
+                        setIsDraggingSeek(true);
+                        if (inactivityTimeoutRef.current) {
+                          clearTimeout(inactivityTimeoutRef.current);
+                          inactivityTimeoutRef.current = null;
+                        }
+                        setAreControlsVisible(true);
+                      }}
+                      onPointerUp={(e) => {
+                        const val = parseFloat((e.target as HTMLInputElement).value);
+                        handleSeekCommit(val);
+                      }}
                       onChange={(e) => {
                         const val = parseFloat(e.target.value);
-                        if (onVolumeChange) {
-                          onVolumeChange(val);
-                        }
+                        handleSeekProgress(val);
                       }}
-                      style={getVolumeTrackStyle(volume, isMuted)}
-                      className="w-20 sm:w-24 h-1.5 rounded-lg appearance-none cursor-pointer transition-all"
-                      title={`Volume: ${Math.round(volume * 100)}%${isMuted ? ' (Muted)' : ''}`}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"
+                      title={`Progress: ${formatTimestamp(effectiveTime, false)} / ${formatTimestamp(effectiveDuration, false)}`}
                     />
+
+                    {/* Draggable Scrubber Thumb */}
                     <div
-                      className="absolute left-1/2 top-0 bottom-0 w-0.5 pointer-events-none bg-slate-900/90 -translate-x-1/2"
-                      title="100% (Default Volume)"
+                      className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3.5 h-3.5 rounded-full bg-white border-2 border-cyan-400 shadow-md shadow-cyan-500/50 pointer-events-none scale-0 group-hover/seek:scale-100 transition-transform z-10"
+                      style={{
+                        left: `${effectiveDuration > 0 ? Math.max(0, Math.min(100, (effectiveTime / effectiveDuration) * 100)) : 0}%`,
+                      }}
                     />
                   </div>
-                  <span
-                    className="font-mono text-[10px] font-bold min-w-[38px] text-right transition-colors"
-                    style={{ color: isMuted ? '#94a3b8' : getVolumeColor(volume) }}
-                  >
-                    {isMuted ? 'Muted' : `${Math.round(volume * 100)}%`}
+
+                  {/* Total Video Duration Timestamp */}
+                  <span className="font-mono text-xs font-semibold text-slate-400 shrink-0 select-none">
+                    {formatTimestamp(effectiveDuration, false)}
                   </span>
                 </div>
 
-                <div className="w-px h-4 bg-slate-800 mx-0.5" />
-
-                {/* Exit Fullscreen Button */}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    toggleFullscreen();
+                {/* Right: Volume & Exit Fullscreen Capsule */}
+                <div
+                  onPointerDown={() => {
+                    isInteractingWithControlsRef.current = true;
+                    if (inactivityTimeoutRef.current) {
+                      clearTimeout(inactivityTimeoutRef.current);
+                      inactivityTimeoutRef.current = null;
+                    }
+                    setAreControlsVisible(true);
                   }}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs border border-slate-700 shadow-sm transition-all hover:scale-105 active:scale-95"
-                  title="Exit Fullscreen (F)"
+                  onPointerUp={() => {
+                    isInteractingWithControlsRef.current = false;
+                    resetInactivityTimer();
+                  }}
+                  onMouseMove={(e) => {
+                    e.stopPropagation();
+                    setAreControlsVisible(true);
+                    if (inactivityTimeoutRef.current) {
+                      clearTimeout(inactivityTimeoutRef.current);
+                      inactivityTimeoutRef.current = null;
+                    }
+                  }}
+                  className="flex items-center gap-3 px-4 py-2 rounded-2xl bg-slate-950/90 backdrop-blur-xl border border-slate-700/80 shadow-2xl pointer-events-auto shrink-0 select-none"
                 >
-                  <Minimize2 className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Exit Fullscreen</span>
-                </button>
+                  {/* Mute/Unmute Button */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (onToggleMute) {
+                        onToggleMute();
+                      }
+                    }}
+                    className="p-1.5 rounded-xl hover:bg-slate-800 text-slate-300 hover:text-white transition-colors"
+                    title={isMuted ? 'Unmute (M)' : 'Mute (M)'}
+                  >
+                    {isMuted || volume === 0 ? (
+                      <VolumeX className="w-4 h-4 text-rose-400" />
+                    ) : (
+                      <Volume2
+                        className="w-4 h-4 transition-colors"
+                        style={{ color: getVolumeColor(volume) }}
+                      />
+                    )}
+                  </button>
+
+                  {/* Volume Slider (0% to 200%) */}
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex items-center">
+                      <input
+                        type="range"
+                        min={0}
+                        max={2}
+                        step={0.05}
+                        value={volume}
+                        onClick={(e) => e.stopPropagation()}
+                        onPointerDown={() => {
+                          isInteractingWithControlsRef.current = true;
+                        }}
+                        onPointerUp={() => {
+                          isInteractingWithControlsRef.current = false;
+                          resetInactivityTimer();
+                        }}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          if (onVolumeChange) {
+                            onVolumeChange(val);
+                          }
+                        }}
+                        style={getVolumeTrackStyle(volume, isMuted)}
+                        className="w-20 sm:w-24 h-1.5 rounded-lg appearance-none cursor-pointer transition-all"
+                        title={`Volume: ${Math.round(volume * 100)}%${isMuted ? ' (Muted)' : ''}`}
+                      />
+                      <div
+                        className="absolute left-1/2 top-0 bottom-0 w-0.5 pointer-events-none bg-slate-900/90 -translate-x-1/2"
+                        title="100% (Default Volume)"
+                      />
+                    </div>
+                    <span
+                      className="font-mono text-[10px] font-bold min-w-[38px] text-right transition-colors"
+                      style={{ color: isMuted ? '#94a3b8' : getVolumeColor(volume) }}
+                    >
+                      {isMuted ? 'Muted' : `${Math.round(volume * 100)}%`}
+                    </span>
+                  </div>
+
+                  <div className="w-px h-4 bg-slate-800 mx-0.5" />
+
+                  {/* Exit Fullscreen Button */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleFullscreen();
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs border border-slate-700 shadow-sm transition-all hover:scale-105 active:scale-95"
+                    title="Exit Fullscreen (F)"
+                  >
+                    <Minimize2 className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>Exit Fullscreen</span>
+                  </button>
+                </div>
               </div>
             )}
           </>
