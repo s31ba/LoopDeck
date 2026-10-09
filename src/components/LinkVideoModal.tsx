@@ -70,57 +70,72 @@ export const LinkVideoModal: React.FC<LinkVideoModalProps> = ({
   ): Promise<{ ok: boolean; duration: number; thumbnail: string }> => {
     return new Promise((resolve) => {
       const video = document.createElement('video');
-      video.crossOrigin = 'anonymous';
-      video.preload = 'metadata';
+      // NOTE: Do NOT set video.crossOrigin = 'anonymous' here!
+      // Browsers can play ANY cross-origin video in <video> elements natively,
+      // but setting crossOrigin='anonymous' blocks servers that lack CORS headers.
       video.muted = true;
       video.playsInline = true;
+      video.preload = 'metadata';
 
       let resolved = false;
-      const timer = setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          video.removeAttribute('src');
-          video.load();
-          resolve({ ok: false, duration: 0, thumbnail: '' });
-        }
-      }, 2800);
+      const cleanUp = () => {
+        video.removeAttribute('src');
+        video.load();
+        video.remove();
+      };
 
-      video.onloadeddata = () => {
+      const finish = (ok: boolean, duration = 0, thumbnail = '') => {
         if (resolved) return;
+        resolved = true;
+        clearTimeout(timer);
+        cleanUp();
+        resolve({ ok, duration, thumbnail });
+      };
+
+      // Timeout for direct playback check
+      const timer = setTimeout(() => {
+        finish(false, 0, '');
+      }, 4000);
+
+      const tryExtractThumbnail = (): string => {
         try {
-          // Verify canvas doesn't throw security error
           const canvas = document.createElement('canvas');
           canvas.width = 160;
           canvas.height = 90;
           const ctx = canvas.getContext('2d');
           if (ctx && video.videoWidth > 0) {
             ctx.drawImage(video, 0, 0, 160, 90);
-            const thumb = canvas.toDataURL('image/jpeg', 0.65);
-            resolved = true;
-            clearTimeout(timer);
-            video.removeAttribute('src');
-            video.load();
-            resolve({ ok: true, duration: video.duration || 0, thumbnail: thumb });
-            return;
+            return canvas.toDataURL('image/jpeg', 0.65);
           }
         } catch {
-          // Canvas tainted due to CORS restriction
+          // Canvas tainted due to cross-origin restriction - that is completely normal,
+          // the video still plays perfectly in the HTML5 video element!
         }
-        resolved = true;
-        clearTimeout(timer);
-        video.removeAttribute('src');
-        video.load();
-        resolve({ ok: false, duration: 0, thumbnail: '' });
+        return '';
+      };
+
+      video.onloadeddata = () => {
+        const thumb = tryExtractThumbnail();
+        finish(true, video.duration || 0, thumb);
+      };
+
+      video.oncanplay = () => {
+        const thumb = tryExtractThumbnail();
+        finish(true, video.duration || 0, thumb);
+      };
+
+      video.onloadedmetadata = () => {
+        if (video.duration > 0) {
+          // Give a brief window to capture a frame thumbnail if available
+          setTimeout(() => {
+            const thumb = tryExtractThumbnail();
+            finish(true, video.duration || 0, thumb);
+          }, 500);
+        }
       };
 
       video.onerror = () => {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timer);
-          video.removeAttribute('src');
-          video.load();
-          resolve({ ok: false, duration: 0, thumbnail: '' });
-        }
+        finish(false, 0, '');
       };
 
       video.src = testUrl;
@@ -145,7 +160,7 @@ export const LinkVideoModal: React.FC<LinkVideoModalProps> = ({
     setDetailMessage('Testing direct browser playback...');
 
     try {
-      // 1. Try direct browser playback first
+      // 1. Try direct browser playback first (works on ALL hosts, including GitHub Pages)
       const directResult = await testDirectPlayback(trimmed);
 
       if (directResult.ok) {
@@ -178,9 +193,9 @@ export const LinkVideoModal: React.FC<LinkVideoModalProps> = ({
         return;
       }
 
-      // 2. Direct playback failed or restricted: use server-side remote retrieval / proxy layer
+      // 2. Direct playback failed: fallback to server-side remote retrieval / proxy layer (if fullstack)
       setStep('checking');
-      setDetailMessage('Direct playback unavailable. Connecting via server proxy layer...');
+      setDetailMessage('Connecting via server proxy layer...');
 
       // Transition to preparing step to inform user
       const prepTimer = setTimeout(() => {
@@ -188,17 +203,30 @@ export const LinkVideoModal: React.FC<LinkVideoModalProps> = ({
         setDetailMessage('Analyzing media stream, remuxing/transcoding if needed...');
       }, 1200);
 
-      const res = await fetch('/api/link-video', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ url: trimmed }),
-      });
+      let res: Response;
+      try {
+        res = await fetch('/api/link-video', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ url: trimmed }),
+        });
+      } catch {
+        clearTimeout(prepTimer);
+        throw new Error(
+          'Could not connect to backend server. On static hosting like GitHub Pages, please provide a direct playable video link (such as .mp4 or .webm) or upload the video file directly.'
+        );
+      }
 
       clearTimeout(prepTimer);
 
       if (!res.ok) {
+        if (res.status === 405 || res.status === 404) {
+          throw new Error(
+            'This video link could not be played directly in the browser. Note: On static GitHub Pages, server-side transcoding (/api) is unavailable. Please link a direct video file (.mp4, .webm) or use the Upload Video button.'
+          );
+        }
         const errData = await res.json().catch(() => ({}));
         throw new Error(errData.error || `Server responded with HTTP ${res.status}`);
       }
@@ -341,7 +369,7 @@ export const LinkVideoModal: React.FC<LinkVideoModalProps> = ({
             </div>
 
             <p className="text-[11px] text-slate-400 leading-relaxed">
-              Supports direct video links and remote streams (MP4, WebM, MOV, MKV, AVI, MPEG, M4V, TS). If direct playback is blocked by CORS or container format, LoopDeck automatically retrieves and prepares the video server-side.
+              Accepts direct video links (MP4, WebM, OGG). Direct video files play natively in the browser on any host (including GitHub Pages). Webpage URLs (like YouTube watch pages) require the fullstack backend transcoding server.
             </p>
           </form>
 
