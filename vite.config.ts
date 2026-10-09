@@ -5,11 +5,11 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
-    base: process.env.BASE_URL || './',
+    base: './',
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
-        '@': path.resolve(import.meta.dirname || '.', '.'),
+        '@': path.resolve(__dirname, '.'),
       },
     },
     server: {
